@@ -142,9 +142,13 @@ def build_atoms(text: str) -> tuple[list[Atom], list[bool]]:
             flush_run()
             pieces.append(("s", " "))
         elif unicodedata.combining(ch):
-            # 组合字符附加到前一个原子上（英文单词同样不拆）；
-            # 出现在开头 / 空格之后时并入下一个连续片段
-            if pieces and pieces[-1][0] != "s":
+            # 组合字符附加到前一字符所在的原子上（英文单词同样不拆）：
+            # 拉丁连续片段尚在缓冲时附在片段内的前一字符；缓冲为空且紧跟
+            # 已完成的原子（如汉字）时附在该原子上；出现在开头 / 空格之后
+            # 时并入下一个连续片段。连续组合字符按原顺序依次附加
+            if run:
+                run.append(ch)
+            elif pieces and pieces[-1][0] != "s":
                 kind, value = pieces[-1]
                 pieces[-1] = (kind, value + ch)
             else:

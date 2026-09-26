@@ -1127,6 +1127,37 @@ def test_build_atoms_merges_english_but_splits_cjk():
     assert atoms3[0].width == 4  # 4 个基字符，组合符 0 列
 
 
+def test_build_atoms_combining_mark_attaches_to_previous_character():
+    # 拉丁片段尚在缓冲时，组合字符附在片段内的前一字符，而非更早的汉字原子
+    atoms, gaps = build_atoms("中é文")
+    assert [a.text for a in atoms] == ["中", "é", "文"]
+    assert [a.width for a in atoms] == [2, 1, 2]  # 组合符 0 列
+    assert [a.cjk for a in atoms] == [True, False, True]
+    assert gaps == [False, False]
+    # 连续组合字符保持原顺序
+    atoms2, _ = build_atoms("中é̂文")
+    assert [a.text for a in atoms2] == ["中", "é̂", "文"]
+    # 缓冲为空、紧跟汉字时附在该汉字上
+    atoms3, _ = build_atoms("中́文")
+    assert [a.text for a in atoms3] == ["中́", "文"]
+    # 开头 / 空格之后并入下一个连续片段
+    atoms4, _ = build_atoms("x ́y")
+    assert [a.text for a in atoms4] == ["x", "́y"]
+
+
+def test_wrap_combining_mark_stays_with_base_letter():
+    # 回归：正文 中 + e + U+0301 + 文、每行 3 列时，重音不得脱离 e
+    # （曾错位为“中́ / e文”）；原子宽 [2,1,2]，断法 2/3 与 3/2 同分，
+    # 同分取断点序列靠前者 -> “中 / é文”
+    text = "中é文"
+    plan = plan_wrap(text, 3, 2)
+    assert isinstance(plan, WrapPlan)
+    assert [line.text for line in plan.lines] == ["中", "é文"]
+    assert [line.width for line in plan.lines] == [2, 3]
+    # 除插入的换行外字符顺序不变
+    assert "".join(line.text for line in plan.lines) == text
+
+
 def test_wrap_balances_lines_by_squared_slack():
     # 6 个汉字共 12 列、8 列 2 行：均衡 3/3（代价 4+4）优于贪心 4/2（0+16）
     plan = plan_wrap("一二三四五六", 8, 2)
@@ -1356,6 +1387,29 @@ def test_api_wrap_multiline_body_newlines_collapse_even_when_wide():
     out = resp.json()["wrapped_srt"]
     assert out == "1\n00:00:01,000 --> 00:00:03,000\n你好 世界\n"
     assert resp.json()["changed_count"] == 1
+
+
+def test_api_wrap_combining_mark_keeps_character_order():
+    # 回归：组合字符随基字符所在原子断行；接口行列表与 wrapped_srt
+    # （页面预览 / 下载同源）一致，时间轴与未改字幕保持原样
+    src = (
+        "1\n00:00:01,000 --> 00:00:02,000\n中é文\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\n好\n"
+    )
+    resp = client.post("/api/wrap", json={"srt": src, "max_columns": 3, "max_lines": 2})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    cue1, cue2 = data["cues"]
+    assert [l["text"] for l in cue1["lines"]] == ["中", "é文"]
+    assert [[l["text"], l["width"]] for l in cue1["lines"]] == [["中", 2], ["é文", 3]]
+    assert cue1["changed"] and cue1["success"]
+    # 未改字幕原样保留
+    assert cue2["success"] and not cue2["changed"]
+    assert data["changed_count"] == 1 and data["failed_count"] == 0
+    assert data["wrapped_srt"] == (
+        "1\n00:00:01,000 --> 00:00:02,000\n中\né文\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\n好\n"
+    )
 
 
 @pytest.mark.parametrize("bad_value", [0, -1, 1.5, True, False, "8", None])
